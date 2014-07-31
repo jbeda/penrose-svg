@@ -236,7 +236,10 @@ func BoundsOfPrimitiveSlice(ps []PenrosePrimitive) geom.Rect {
 ////////////////////////////////////////////////////////////////////////////
 func main() {
 	shapes := Sun()
-	bounds := BoundsOfPrimitiveSlice(shapes)
+	// The laser cutter can cut 400x600.  Make our dimensions match that.
+	bounds := geom.Rect{geom.Coord{-300, -200}, geom.Coord{300, 200}}
+	bounds.Scale(1.0/350.0, 1.0/350.0)
+	fmt.Fprintln(os.Stderr, bounds)
 
 	// Deflate the shapes
 	for i := 0; i < 5; i++ {
@@ -246,6 +249,15 @@ func main() {
 		}
 		shapes = newShapes
 	}
+
+	// Remove any shapes out of bounds
+	newShapes := make([]PenrosePrimitive, 0, len(shapes))
+	for _, shape := range shapes {
+		if bounds.ContainsRect(shape.(geom.Bounded).Bounds()) {
+			newShapes = append(newShapes, shape)
+		}
+	}
+	shapes = newShapes
 
 	// Render to drawing primitives
 	ro := &RenderOutput{}
