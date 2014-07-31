@@ -84,9 +84,48 @@ func (svg *SVG) CircularArc(c geom.Coord, v1 geom.Coord, v2 geom.Coord, r float6
 ////////////////////////////////////////////////////////////////////////////
 // Penrose stuff
 
-// Penrose primitive
+type CutLine struct {
+	A, B geom.Coord
+}
+
+type MarkArc struct {
+	C, P1, P2 geom.Coord
+	R         float64
+}
+
+type RenderOutput struct {
+	cuts  []CutLine
+	mark1 []MarkArc
+	mark2 []MarkArc
+}
+
+func (me *RenderOutput) AddCutLine(p1, p2 geom.Coord) {
+	me.cuts = append(me.cuts, CutLine{p1, p2})
+}
+
+func (me *RenderOutput) AddMark1Arc(c, v1, v2 geom.Coord, r float64) {
+	me.mark1 = append(me.mark1, MarkArc{c, v1, v2, r})
+}
+func (me *RenderOutput) AddMark2Arc(c, v1, v2 geom.Coord, r float64) {
+	me.mark2 = append(me.mark2, MarkArc{c, v1, v2, r})
+}
+
+func (me *RenderOutput) MakeSVG(s *SVG) {
+	for _, ma := range me.mark1 {
+		s.CircularArc(ma.C, ma.P1, ma.P2, ma.R, MARK1_STYLE)
+	}
+	for _, ma := range me.mark2 {
+		s.CircularArc(ma.C, ma.P1, ma.P2, ma.R+DOUBLE_STROKE_OFFSET, MARK2_STYLE)
+		s.CircularArc(ma.C, ma.P1, ma.P2, ma.R-DOUBLE_STROKE_OFFSET, MARK2_STYLE)
+	}
+	for _, cl := range me.cuts {
+		s.Line(cl.A, cl.B, CUT_STYLE)
+	}
+}
+
+// Penrose primitives
 type PenrosePrimitive interface {
-	Draw(s *SVG)
+	Render(ro *RenderOutput)
 	Deflate() []PenrosePrimitive
 }
 
@@ -99,16 +138,15 @@ type halfKite struct {
 	*geom.Triangle
 }
 
-func (me halfKite) Draw(s *SVG) {
-	s.Line(me.B, me.C, CUT_STYLE)
-	s.Line(me.C, me.A, CUT_STYLE)
+func (me halfKite) Render(ro *RenderOutput) {
+	ro.AddCutLine(me.B, me.C)
+	ro.AddCutLine(me.C, me.A)
 
 	rB := me.A.Minus(me.C).Magnitude()
 	rA := rB * 1.0 / math.Phi
 
-	s.CircularArc(me.A, me.B, me.C, rA+DOUBLE_STROKE_OFFSET, MARK2_STYLE)
-	s.CircularArc(me.A, me.B, me.C, rA-DOUBLE_STROKE_OFFSET, MARK2_STYLE)
-	s.CircularArc(me.B, me.C, me.A, rB, MARK1_STYLE)
+	ro.AddMark2Arc(me.A, me.B, me.C, rA)
+	ro.AddMark1Arc(me.B, me.C, me.A, rB)
 }
 
 func (me halfKite) Deflate() []PenrosePrimitive {
@@ -125,17 +163,16 @@ type halfDart struct {
 	*geom.Triangle
 }
 
-func (me halfDart) Draw(s *SVG) {
-	s.Line(me.B, me.C, CUT_STYLE)
-	s.Line(me.C, me.A, CUT_STYLE)
+func (me halfDart) Render(ro *RenderOutput) {
+	ro.AddCutLine(me.B, me.C)
+	ro.AddCutLine(me.C, me.A)
 
 	r := me.A.Minus(me.C).Magnitude()
 	rA := r / math.Pow(math.Phi, 2)
 	rB := r / math.Pow(math.Phi, 3)
 
-	s.CircularArc(me.A, me.B, me.C, rA, MARK1_STYLE)
-	s.CircularArc(me.B, me.C, me.A, rB+DOUBLE_STROKE_OFFSET, MARK2_STYLE)
-	s.CircularArc(me.B, me.C, me.A, rB-DOUBLE_STROKE_OFFSET, MARK2_STYLE)
+	ro.AddMark1Arc(me.A, me.B, me.C, rA)
+	ro.AddMark2Arc(me.B, me.C, me.A, rB)
 }
 
 func (me halfDart) Deflate() []PenrosePrimitive {
@@ -201,6 +238,7 @@ func main() {
 	shapes := Sun()
 	bounds := BoundsOfPrimitiveSlice(shapes)
 
+	// Deflate the shapes
 	for i := 0; i < 5; i++ {
 		newShapes := make([]PenrosePrimitive, 0, 3*len(shapes))
 		for _, shape := range shapes {
@@ -209,10 +247,14 @@ func main() {
 		shapes = newShapes
 	}
 
+	// Render to drawing primitives
+	ro := &RenderOutput{}
+	for _, shape := range shapes {
+		shape.Render(ro)
+	}
+
 	s := NewSVG(os.Stdout)
 	s.Start(bounds, DEFAULT_STYLE)
-	for _, shape := range shapes {
-		shape.Draw(s)
-	}
+	ro.MakeSVG(s)
 	s.End()
 }
