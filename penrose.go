@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"github.com/jbeda/geom"
+	"github.com/jbeda/geom/qtree"
 	"io"
 	"math"
 	"os"
@@ -67,10 +68,6 @@ func (svg *SVG) Line(p1 geom.Coord, p2 geom.Coord, s ...string) {
 	svg.printf("<line x1='%f' y1='%f' x2='%f' y2='%f' %s/>\n", p1.X, p1.Y, p2.X, p2.Y, extraparams(s))
 }
 
-func (svg *SVG) Circle(c geom.Coord, r float64, s ...string) {
-	svg.printf("<circle cx='%f' cy='%f' r='%f' %s/>\n", c.X, c.Y, r, extraparams(s))
-}
-
 func (svg *SVG) CircularArc(c geom.Coord, v1 geom.Coord, v2 geom.Coord, r float64, s ...string) {
 	p1 := v1.Minus(c).Unit().Times(r).Plus(c)
 	p2 := v2.Minus(c).Unit().Times(r).Plus(c)
@@ -108,6 +105,64 @@ func (me *RenderOutput) AddMark1Arc(c, v1, v2 geom.Coord, r float64) {
 }
 func (me *RenderOutput) AddMark2Arc(c, v1, v2 geom.Coord, r float64) {
 	me.mark2 = append(me.mark2, MarkArc{c, v1, v2, r})
+}
+
+// Comparing floating point sucks.  This is probably wrong in the general case
+// but is good enough for this application.  Don't assume I know what I'm
+// doing here.  I'm pulling stuff out of my butt.
+const FLOAT_EQUAL_THRESH = 0.000000001
+
+func FloatAlmostEqual(a, b float64) bool {
+	return math.Abs(a-b) < FLOAT_EQUAL_THRESH
+}
+
+func AlmostEqualsCoord(a, b geom.Coord) bool {
+	return FloatAlmostEqual(a.X, b.X) && FloatAlmostEqual(a.Y, b.Y)
+}
+
+func AlmostEqualsCutLines(a, b CutLine) bool {
+	return (AlmostEqualsCoord(a.A, b.A) && AlmostEqualsCoord(a.B, b.B)) ||
+		(AlmostEqualsCoord(a.A, b.B) && AlmostEqualsCoord(a.B, b.A))
+}
+
+// This function satisfies qtree.Item
+func (cl CutLine) Equals(oi interface{}) bool {
+	ocl, ok := oi.(CutLine)
+	return ok && AlmostEqualsCutLines(cl, ocl)
+}
+
+func (cl CutLine) Bounds() geom.Rect {
+	r := geom.Rect{cl.A, cl.A}
+	r.ExpandToContainCoord(cl.B)
+	return r
+}
+
+func (me *RenderOutput) RemoveDuplicates() {
+	// First calculate the bounds of all the cut lines
+	allBounds := geom.NilRect()
+	for _, cl := range me.cuts {
+		allBounds.ExpandToContainRect(cl.Bounds())
+	}
+
+	fmt.Fprintf(os.Stderr, "Number of cut lines before RemoveDuplicates: %d\n", len(me.cuts))
+
+	// Create our qtree based on that
+	qt := qtree.New(qtree.ConfigDefault(), allBounds)
+
+	// Add all cuts if they aren't already there
+	for _, cl := range me.cuts {
+		qt.FindOrInsert(cl)
+	}
+
+	// Extract out all elements
+	col := make(map[qtree.Item]bool)
+	qt.Enumerate(col)
+	newCuts := []CutLine{}
+	for item, _ := range col {
+		newCuts = append(newCuts, item.(CutLine))
+	}
+	me.cuts = newCuts
+	fmt.Fprintf(os.Stderr, "Number of cut lines after RemoveDuplicates: %d\n", len(me.cuts))
 }
 
 func (me *RenderOutput) MakeSVG(s *SVG) {
@@ -239,7 +294,6 @@ func main() {
 	// The laser cutter can cut 400x600.  Make our dimensions match that.
 	bounds := geom.Rect{geom.Coord{-300, -200}, geom.Coord{300, 200}}
 	bounds.Scale(1.0/350.0, 1.0/350.0)
-	fmt.Fprintln(os.Stderr, bounds)
 
 	// Deflate the shapes
 	for i := 0; i < 5; i++ {
@@ -264,6 +318,7 @@ func main() {
 	for _, shape := range shapes {
 		shape.Render(ro)
 	}
+	ro.RemoveDuplicates()
 
 	s := NewSVG(os.Stdout)
 	s.Start(bounds, DEFAULT_STYLE)
