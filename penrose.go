@@ -18,6 +18,7 @@ const (
 	ARC_FUNC_BEZIER
 )
 
+// Tunable constants for output
 const (
 	DEFAULT_STYLE              = "stroke-width: 0.002; stroke-linecap: round; fill: none"
 	DOUBLE_STROKE_OFFSET       = 0.002
@@ -28,8 +29,12 @@ const (
 	SQUISH_ARC_FUNC            = ARC_FUNC_CIRCULAR
 	SQUISH_ARC_FACTOR          = 0.9
 	SQUISH_ARC_BEZIER_ROUNDESS = 0.1
-	C1                         = math.Phi - 1.0
-	C2                         = 2.0 - math.Phi
+)
+
+// Mathematical constants for generating Penrose decompositions.
+const (
+	C1 = math.Phi - 1.0
+	C2 = 2.0 - math.Phi
 )
 
 ////////////////////////////////////////////////////////////////////////////
