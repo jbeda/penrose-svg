@@ -9,6 +9,14 @@ import (
 	"strings"
 )
 
+const (
+	DEFAULT_STYLE        = "stroke-width: 0.002; stroke-linecap: round; fill: none"
+	DOUBLE_STROKE_OFFSET = 0.002
+	CUT_STYLE            = "stroke: black"
+	MARK1_STYLE          = "stroke: green"
+	MARK2_STYLE          = "stroke: red"
+)
+
 ////////////////////////////////////////////////////////////////////////////
 // SVG serialization helper
 type SVG struct {
@@ -63,7 +71,12 @@ func (svg *SVG) Circle(c geom.Coord, r float64, s ...string) {
 	svg.printf("<circle cx='%f' cy='%f' r='%f' %s/>\n", c.X, c.Y, r, extraparams(s))
 }
 
-func (svg *SVG) CircularArc(p1 geom.Coord, p2 geom.Coord, r float64, largeArc bool, sweep bool, s ...string) {
+func (svg *SVG) CircularArc(c geom.Coord, v1 geom.Coord, v2 geom.Coord, r float64, s ...string) {
+	p1 := v1.Minus(c).Unit().Times(r).Plus(c)
+	p2 := v2.Minus(c).Unit().Times(r).Plus(c)
+	a := geom.VertexAngle(v1, c, v2)
+	largeArc := a > math.Pi
+	sweep := a > 0
 	svg.printf("<path d='M%f,%f A%f,%f 0 %s,%s %f,%f' %s/>\n",
 		p1.X, p1.Y, r, r, onezero(largeArc), onezero(sweep), p2.X, p2.Y, extraparams(s))
 }
@@ -87,22 +100,15 @@ type halfKite struct {
 }
 
 func (me halfKite) Draw(s *SVG) {
-	s.Line(me.B, me.C, "stroke: black")
-	s.Line(me.C, me.A, "stroke: black")
+	s.Line(me.B, me.C, CUT_STYLE)
+	s.Line(me.C, me.A, CUT_STYLE)
 
 	rB := me.A.Minus(me.C).Magnitude()
 	rA := rB * 1.0 / math.Phi
 
-	aA1 := me.B.Minus(me.A).Unit().Times(rA).Plus(me.A)
-	aA2 := me.C.Minus(me.A).Unit().Times(rA).Plus(me.A)
-	s.CircularArc(aA1, aA2, rA, false,
-		geom.VertexAngle(me.A, me.B, me.C) < 0, "stroke:green")
-
-	aB1 := me.C.Minus(me.B).Unit().Times(rB).Plus(me.B)
-	aB2 := me.A.Minus(me.B).Unit().Times(rB).Plus(me.B)
-	s.CircularArc(aB1, aB2, rB, false,
-		geom.VertexAngle(me.C, me.B, me.A) > 0, "stroke:red")
-
+	s.CircularArc(me.A, me.B, me.C, rA+DOUBLE_STROKE_OFFSET, MARK2_STYLE)
+	s.CircularArc(me.A, me.B, me.C, rA-DOUBLE_STROKE_OFFSET, MARK2_STYLE)
+	s.CircularArc(me.B, me.C, me.A, rB, MARK1_STYLE)
 }
 
 func (me halfKite) Deflate() []PenrosePrimitive {
@@ -120,22 +126,16 @@ type halfDart struct {
 }
 
 func (me halfDart) Draw(s *SVG) {
-	s.Line(me.B, me.C, "stroke: black")
-	s.Line(me.C, me.A, "stroke: black")
+	s.Line(me.B, me.C, CUT_STYLE)
+	s.Line(me.C, me.A, CUT_STYLE)
 
 	r := me.A.Minus(me.C).Magnitude()
 	rA := r / math.Pow(math.Phi, 2)
 	rB := r / math.Pow(math.Phi, 3)
 
-	aA1 := me.B.Minus(me.A).Unit().Times(rA).Plus(me.A)
-	aA2 := me.C.Minus(me.A).Unit().Times(rA).Plus(me.A)
-	s.CircularArc(aA1, aA2, rA, false,
-		geom.VertexAngle(me.A, me.B, me.C) < 0, "stroke:red")
-
-	aB1 := me.C.Minus(me.B).Unit().Times(rB).Plus(me.B)
-	aB2 := me.A.Minus(me.B).Unit().Times(rB).Plus(me.B)
-	s.CircularArc(aB1, aB2, rB, false,
-		geom.VertexAngle(me.C, me.B, me.A) > 0, "stroke:green")
+	s.CircularArc(me.A, me.B, me.C, rA, MARK1_STYLE)
+	s.CircularArc(me.B, me.C, me.A, rB+DOUBLE_STROKE_OFFSET, MARK2_STYLE)
+	s.CircularArc(me.B, me.C, me.A, rB-DOUBLE_STROKE_OFFSET, MARK2_STYLE)
 }
 
 func (me halfDart) Deflate() []PenrosePrimitive {
@@ -210,7 +210,7 @@ func main() {
 	}
 
 	s := NewSVG(os.Stdout)
-	s.Start(bounds, "stroke-width: 0.1%; stroke-linecap: round; fill: none")
+	s.Start(bounds, DEFAULT_STYLE)
 	for _, shape := range shapes {
 		shape.Draw(s)
 	}
