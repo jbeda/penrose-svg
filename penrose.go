@@ -20,15 +20,16 @@ const (
 
 // Tunable constants for output
 const (
-	DEFAULT_STYLE              = "stroke-width: 0.002; stroke-linecap: round; fill: none"
-	DOUBLE_STROKE_OFFSET       = 0.002
-	CUT_STYLE                  = "stroke: black"
-	MARK1_STYLE                = "stroke: green"
-	MARK2_STYLE                = "stroke: red"
-	DEFLATE_LEVEL              = 5
-	SQUISH_ARC_FUNC            = ARC_FUNC_CIRCULAR
-	SQUISH_ARC_FACTOR          = 0.9
-	SQUISH_ARC_BEZIER_ROUNDESS = 0.1
+	DEFAULT_STYLE                = "stroke-width: 0.002; stroke-linecap: round; fill: none"
+	DOUBLE_STROKE_OFFSET         = 0.002
+	CUT_STYLE                    = "stroke: black"
+	MARK1_STYLE                  = "stroke: green"
+	MARK2_STYLE                  = "stroke: red"
+	DEFLATE_LEVEL                = 4
+	SQUISH_ARC_FUNC              = ARC_FUNC_CIRCULAR
+	SQUISH_ARC_FACTOR            = 0.9
+	SQUISH_ARC_BEZIER_ROUNDESS_A = 0.15
+	SQUISH_ARC_BEZIER_ROUNDESS_B = 0.1
 )
 
 // Mathematical constants for generating Penrose decompositions.
@@ -237,9 +238,10 @@ func SquishedArcBezier(svg *SVG, ma *MarkArc, rOffset float64, s ...string) {
 		v1p = geom.Coord{v1.Y, -v1.X}.Unit()
 		v2p = geom.Coord{-v2.Y, v2.X}.Unit()
 	}
-	ctrlDist := SQUISH_ARC_BEZIER_ROUNDESS * math.Pow(C1, DEFLATE_LEVEL)
-	ctrl1 := v1p.Times(ctrlDist).Plus(p1)
-	ctrl2 := v2p.Times(ctrlDist + rOffset).Plus(p2)
+	ctrlDist1 := SQUISH_ARC_BEZIER_ROUNDESS_A * math.Abs(a) * math.Pow(C1, DEFLATE_LEVEL)
+	ctrl1 := v1p.Times(ctrlDist1).Plus(p1)
+	ctrlDist2 := SQUISH_ARC_BEZIER_ROUNDESS_B*math.Abs(a)*math.Pow(C1, DEFLATE_LEVEL) + rOffset
+	ctrl2 := v2p.Times(ctrlDist2).Plus(p2)
 	// svg.Circle(p1, 0.002, s...)
 	// svg.Circle(ctrl1, 0.001, s...)
 	svg.CubicBezier(p1, ctrl1, ctrl2, p2, s...)
