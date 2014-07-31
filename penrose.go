@@ -10,18 +10,32 @@ import (
 	"strings"
 )
 
+// Arc drawing functions/strategies
+type ArcFuncType int
+
 const (
-	DEFAULT_STYLE        = "stroke-width: 0.002; stroke-linecap: round; fill: none"
-	DOUBLE_STROKE_OFFSET = 0.002
-	CUT_STYLE            = "stroke: black"
-	MARK1_STYLE          = "stroke: green"
-	MARK2_STYLE          = "stroke: red"
+	ARC_FUNC_CIRCULAR ArcFuncType = iota
+	ARC_FUNC_BEZIER
+)
+
+const (
+	DEFAULT_STYLE              = "stroke-width: 0.002; stroke-linecap: round; fill: none"
+	DOUBLE_STROKE_OFFSET       = 0.002
+	CUT_STYLE                  = "stroke: black"
+	MARK1_STYLE                = "stroke: green"
+	MARK2_STYLE                = "stroke: red"
+	DEFLATE_LEVEL              = 5
+	SQUISH_ARC_FUNC            = ARC_FUNC_CIRCULAR
+	SQUISH_ARC_FACTOR          = 0.9
+	SQUISH_ARC_BEZIER_ROUNDESS = 0.1
+	C1                         = math.Phi - 1.0
+	C2                         = 2.0 - math.Phi
 )
 
 ////////////////////////////////////////////////////////////////////////////
 // SVG serialization helper
 type SVG struct {
-	Writer io.Writer
+	writer io.Writer
 }
 
 func NewSVG(w io.Writer) *SVG {
@@ -29,7 +43,7 @@ func NewSVG(w io.Writer) *SVG {
 }
 
 func (svg *SVG) printf(format string, a ...interface{}) (n int, errno error) {
-	return fmt.Fprintf(svg.Writer, format, a...)
+	return fmt.Fprintf(svg.writer, format, a...)
 }
 
 // BUGBUG: not quoting aware
@@ -68,14 +82,23 @@ func (svg *SVG) Line(p1 geom.Coord, p2 geom.Coord, s ...string) {
 	svg.printf("<line x1='%f' y1='%f' x2='%f' y2='%f' %s/>\n", p1.X, p1.Y, p2.X, p2.Y, extraparams(s))
 }
 
-func (svg *SVG) CircularArc(c geom.Coord, v1 geom.Coord, v2 geom.Coord, r float64, s ...string) {
-	p1 := v1.Minus(c).Unit().Times(r).Plus(c)
-	p2 := v2.Minus(c).Unit().Times(r).Plus(c)
-	a := geom.VertexAngle(v1, c, v2)
-	largeArc := a > math.Pi
-	sweep := a > 0
+func (svg *SVG) Circle(c geom.Coord, r float64, s ...string) {
+	svg.printf("<circle cx='%f' cy='%f' r='%f' %s/>\n", c.X, c.Y, r, extraparams(s))
+}
+
+func (svg *SVG) CircularArc(p1, p2 geom.Coord, r float64, largeArc, sweep bool, s ...string) {
 	svg.printf("<path d='M%f,%f A%f,%f 0 %s,%s %f,%f' %s/>\n",
 		p1.X, p1.Y, r, r, onezero(largeArc), onezero(sweep), p2.X, p2.Y, extraparams(s))
+}
+
+func (svg *SVG) QuadBezier(p1 geom.Coord, ctrl1 geom.Coord, p2 geom.Coord, s ...string) {
+	svg.printf("<path d='M%f,%f Q%f,%f %f,%f' %s/>\n",
+		p1.X, p1.Y, ctrl1.X, ctrl1.Y, p2.X, p2.Y, extraparams(s))
+}
+
+func (svg *SVG) CubicBezier(p1, ctrl1, ctrl2, p2 geom.Coord, s ...string) {
+	svg.printf("<path d='M%f,%f C%f,%f %f,%f %f,%f' %s/>\n",
+		p1.X, p1.Y, ctrl1.X, ctrl1.Y, ctrl2.X, ctrl2.Y, p2.X, p2.Y, extraparams(s))
 }
 
 ////////////////////////////////////////////////////////////////////////////
@@ -166,16 +189,55 @@ func (me *RenderOutput) RemoveDuplicates() {
 }
 
 func (me *RenderOutput) MakeSVG(s *SVG) {
+
+	squishFunc := SquishedArcCircle
+	if SQUISH_ARC_FUNC == ARC_FUNC_BEZIER {
+		squishFunc = SquishedArcBezier
+	}
+
 	for _, ma := range me.mark1 {
-		s.CircularArc(ma.C, ma.P1, ma.P2, ma.R, MARK1_STYLE)
+		squishFunc(s, &ma, 0, MARK1_STYLE)
 	}
 	for _, ma := range me.mark2 {
-		s.CircularArc(ma.C, ma.P1, ma.P2, ma.R+DOUBLE_STROKE_OFFSET, MARK2_STYLE)
-		s.CircularArc(ma.C, ma.P1, ma.P2, ma.R-DOUBLE_STROKE_OFFSET, MARK2_STYLE)
+		squishFunc(s, &ma, +DOUBLE_STROKE_OFFSET, MARK2_STYLE)
+		squishFunc(s, &ma, -DOUBLE_STROKE_OFFSET, MARK2_STYLE)
 	}
 	for _, cl := range me.cuts {
 		s.Line(cl.A, cl.B, CUT_STYLE)
 	}
+}
+
+func SquishedArcCircle(svg *SVG, ma *MarkArc, rOffset float64, s ...string) {
+	p1 := ma.P1.Minus(ma.C).Unit().Times(ma.R*SQUISH_ARC_FACTOR + rOffset).Plus(ma.C)
+	p2 := ma.P2.Minus(ma.C).Unit().Times(ma.R + rOffset).Plus(ma.C)
+	a := geom.VertexAngle(ma.P1, ma.C, ma.P2)
+	largeArc := a > math.Pi
+	sweep := a > 0
+	svg.CircularArc(p1, p2, ma.R+rOffset/2, largeArc, sweep, s...)
+}
+
+func SquishedArcBezier(svg *SVG, ma *MarkArc, rOffset float64, s ...string) {
+	r := ma.R
+	v1 := ma.P1.Minus(ma.C).Unit()
+	v2 := ma.P2.Minus(ma.C).Unit()
+	p1 := v1.Times(r*SQUISH_ARC_FACTOR + rOffset).Plus(ma.C)
+	p2 := v2.Times(r + rOffset).Plus(ma.C)
+	a := geom.VertexAngle(ma.P1, ma.C, ma.P2)
+
+	var v1p, v2p geom.Coord
+	if a > 0 {
+		v1p = geom.Coord{-v1.Y, v1.X}.Unit()
+		v2p = geom.Coord{v2.Y, -v2.X}.Unit()
+	} else {
+		v1p = geom.Coord{v1.Y, -v1.X}.Unit()
+		v2p = geom.Coord{-v2.Y, v2.X}.Unit()
+	}
+	ctrlDist := SQUISH_ARC_BEZIER_ROUNDESS * math.Pow(C1, DEFLATE_LEVEL)
+	ctrl1 := v1p.Times(ctrlDist).Plus(p1)
+	ctrl2 := v2p.Times(ctrlDist + rOffset).Plus(p2)
+	// svg.Circle(p1, 0.002, s...)
+	// svg.Circle(ctrl1, 0.001, s...)
+	svg.CubicBezier(p1, ctrl1, ctrl2, p2, s...)
 }
 
 // Penrose primitives
@@ -184,10 +246,7 @@ type PenrosePrimitive interface {
 	Deflate() []PenrosePrimitive
 }
 
-const (
-	c1 = math.Phi - 1.0
-	c2 = 2.0 - math.Phi
-)
+const ()
 
 type halfKite struct {
 	*geom.Triangle
@@ -201,13 +260,13 @@ func (me halfKite) Render(ro *RenderOutput) {
 	rA := rB * 1.0 / math.Phi
 
 	ro.AddMark2Arc(me.A, me.B, me.C, rA)
-	ro.AddMark1Arc(me.B, me.C, me.A, rB)
+	ro.AddMark1Arc(me.B, me.A, me.C, rB)
 }
 
 func (me halfKite) Deflate() []PenrosePrimitive {
 	r := make([]PenrosePrimitive, 3)
-	d := me.A.Times(c1).Plus(me.B.Times(c2))
-	e := me.B.Times(c1).Plus(me.C.Times(c2))
+	d := me.A.Times(C1).Plus(me.B.Times(C2))
+	e := me.B.Times(C1).Plus(me.C.Times(C2))
 	r[0] = halfKite{&geom.Triangle{d, me.C, me.A}}
 	r[1] = halfKite{&geom.Triangle{d, me.C, e}}
 	r[2] = halfDart{&geom.Triangle{me.B, e, d}}
@@ -227,12 +286,12 @@ func (me halfDart) Render(ro *RenderOutput) {
 	rB := r / math.Pow(math.Phi, 3)
 
 	ro.AddMark1Arc(me.A, me.B, me.C, rA)
-	ro.AddMark2Arc(me.B, me.C, me.A, rB)
+	ro.AddMark2Arc(me.B, me.A, me.C, rB)
 }
 
 func (me halfDart) Deflate() []PenrosePrimitive {
 	r := make([]PenrosePrimitive, 2)
-	d := me.A.Times(c2).Plus(me.C.Times(c1))
+	d := me.A.Times(C2).Plus(me.C.Times(C1))
 	r[0] = halfDart{&geom.Triangle{me.C, d, me.B}}
 	r[1] = halfKite{&geom.Triangle{me.B, me.A, d}}
 	return r
@@ -254,7 +313,7 @@ var HalfKite = halfKite{
 var HalfDart = halfDart{
 	&geom.Triangle{
 		geom.Coord{1, 0},
-		geom.Coord{c1 * math.Cos(degToRads(36)), c1 * math.Sin(degToRads(36))},
+		geom.Coord{C1 * math.Cos(degToRads(36)), C1 * math.Sin(degToRads(36))},
 		geom.Coord{0, 0},
 	},
 }
@@ -296,7 +355,7 @@ func main() {
 	bounds.Scale(1.0/350.0, 1.0/350.0)
 
 	// Deflate the shapes
-	for i := 0; i < 5; i++ {
+	for i := 0; i < DEFLATE_LEVEL; i++ {
 		newShapes := make([]PenrosePrimitive, 0, 3*len(shapes))
 		for _, shape := range shapes {
 			newShapes = append(newShapes, shape.Deflate()...)
