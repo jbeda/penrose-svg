@@ -15,4 +15,4 @@ Or you can clone this repo and start hacking directly.
 
 ## Example (Requires an SVG capable browser)
 
-![Penrose Tiling](http://slides.eightypercent.net/stuff/penrose.svg)
+![Penrose Example](https://rawgit.com/jbeda/penrose-svg/master/output/penrose.svg)
