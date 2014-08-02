@@ -25,7 +25,7 @@ const (
 	CUT_STYLE                    = "stroke: black"
 	MARK1_STYLE                  = "stroke: green"
 	MARK2_STYLE                  = "stroke: red"
-	DEFLATE_LEVEL                = 4
+	DEFLATE_LEVEL                = 5
 	SQUISH_ARC_FUNC              = ARC_FUNC_CIRCULAR
 	SQUISH_ARC_FACTOR            = 0.9
 	SQUISH_ARC_BEZIER_ROUNDESS_A = 0.15
@@ -81,7 +81,7 @@ func (svg *SVG) Start(viewBox geom.Rect, s ...string) {
 }
 
 func (svg *SVG) End() {
-	svg.printf("</svg>")
+	svg.printf("</svg>\n")
 }
 
 func (svg *SVG) Line(p1 geom.Coord, p2 geom.Coord, s ...string) {
@@ -108,17 +108,75 @@ func (svg *SVG) CubicBezier(p1, ctrl1, ctrl2, p2 geom.Coord, s ...string) {
 }
 
 ////////////////////////////////////////////////////////////////////////////
-// Penrose stuff
+// Decomposed Penrose Geometry
+//
+// This stuff deals with pre-styled lines and arcs and is tailored to Penrose
+// tiling needs.  This could be a generic retained mode 2D model thing but it
+// is more quick and dirty for now.
 
+// Comparing floating point sucks.  This is probably wrong in the general case
+// but is good enough for this application.  Don't assume I know what I'm
+// doing here.  I'm pulling stuff out of my butt.
+const FLOAT_EQUAL_THRESH = 0.000000001
+
+func FloatAlmostEqual(a, b float64) bool {
+	return math.Abs(a-b) < FLOAT_EQUAL_THRESH
+}
+
+func AlmostEqualsCoord(a, b geom.Coord) bool {
+	return FloatAlmostEqual(a.X, b.X) && FloatAlmostEqual(a.Y, b.Y)
+}
+
+// +++ CutLine
 type CutLine struct {
 	A, B geom.Coord
 }
 
+func AlmostEqualsCutLines(a, b CutLine) bool {
+	return (AlmostEqualsCoord(a.A, b.A) && AlmostEqualsCoord(a.B, b.B)) ||
+		(AlmostEqualsCoord(a.A, b.B) && AlmostEqualsCoord(a.B, b.A))
+}
+
+func (cl CutLine) Equals(oi interface{}) bool {
+	ocl, ok := oi.(CutLine)
+	return ok && AlmostEqualsCutLines(cl, ocl)
+}
+
+func (cl CutLine) Bounds() geom.Rect {
+	r := geom.Rect{cl.A, cl.A}
+	r.ExpandToContainCoord(cl.B)
+	return r
+}
+
+// +++ MarkArc
 type MarkArc struct {
 	C, P1, P2 geom.Coord
 	R         float64
 }
 
+func AlmostEqualMarkArcs(a, b MarkArc) bool {
+	return AlmostEqualsCoord(a.C, b.C) && FloatAlmostEqual(a.R, b.R) &&
+		((AlmostEqualsCoord(a.P1, b.P1) && AlmostEqualsCoord(a.P2, b.P2)) ||
+			(AlmostEqualsCoord(a.P1, b.P2) && AlmostEqualsCoord(a.P2, b.P1)))
+}
+
+func (ma MarkArc) Equals(oi interface{}) bool {
+	oma, ok := oi.(MarkArc)
+	return ok && AlmostEqualMarkArcs(ma, oma)
+}
+
+// BUGBUG: This isn't the true bounds but is good enough for finding the
+// endpoints.  To realy get bounds we'd need to look for arcs that cross an
+// axis and add that point to the bounding rect.
+func (ma MarkArc) Bounds() geom.Rect {
+	p1 := ma.P1.Minus(ma.C).Unit().Times(ma.R).Plus(ma.C)
+	p2 := ma.P2.Minus(ma.C).Unit().Times(ma.R).Plus(ma.C)
+	r := geom.Rect{p1, p1}
+	r.ExpandToContainCoord(p2)
+	return r
+}
+
+// +++ RenderOutput
 type RenderOutput struct {
 	cuts  []CutLine
 	mark1 []MarkArc
@@ -134,36 +192,6 @@ func (me *RenderOutput) AddMark1Arc(c, v1, v2 geom.Coord, r float64) {
 }
 func (me *RenderOutput) AddMark2Arc(c, v1, v2 geom.Coord, r float64) {
 	me.mark2 = append(me.mark2, MarkArc{c, v1, v2, r})
-}
-
-// Comparing floating point sucks.  This is probably wrong in the general case
-// but is good enough for this application.  Don't assume I know what I'm
-// doing here.  I'm pulling stuff out of my butt.
-const FLOAT_EQUAL_THRESH = 0.000000001
-
-func FloatAlmostEqual(a, b float64) bool {
-	return math.Abs(a-b) < FLOAT_EQUAL_THRESH
-}
-
-func AlmostEqualsCoord(a, b geom.Coord) bool {
-	return FloatAlmostEqual(a.X, b.X) && FloatAlmostEqual(a.Y, b.Y)
-}
-
-func AlmostEqualsCutLines(a, b CutLine) bool {
-	return (AlmostEqualsCoord(a.A, b.A) && AlmostEqualsCoord(a.B, b.B)) ||
-		(AlmostEqualsCoord(a.A, b.B) && AlmostEqualsCoord(a.B, b.A))
-}
-
-// This function satisfies qtree.Item
-func (cl CutLine) Equals(oi interface{}) bool {
-	ocl, ok := oi.(CutLine)
-	return ok && AlmostEqualsCutLines(cl, ocl)
-}
-
-func (cl CutLine) Bounds() geom.Rect {
-	r := geom.Rect{cl.A, cl.A}
-	r.ExpandToContainCoord(cl.B)
-	return r
 }
 
 func (me *RenderOutput) RemoveDuplicates() {
@@ -195,7 +223,6 @@ func (me *RenderOutput) RemoveDuplicates() {
 }
 
 func (me *RenderOutput) MakeSVG(s *SVG) {
-
 	squishFunc := SquishedArcCircle
 	if SQUISH_ARC_FUNC == ARC_FUNC_BEZIER {
 		squishFunc = SquishedArcBezier
@@ -247,14 +274,14 @@ func SquishedArcBezier(svg *SVG, ma *MarkArc, rOffset float64, s ...string) {
 	svg.CubicBezier(p1, ctrl1, ctrl2, p2, s...)
 }
 
-// Penrose primitives
+////////////////////////////////////////////////////////////////////////////
+// Primary Penrose tile generation
 type PenrosePrimitive interface {
 	Render(ro *RenderOutput)
 	Deflate() []PenrosePrimitive
 }
 
-const ()
-
+// +++ halfKite
 type halfKite struct {
 	*geom.Triangle
 }
@@ -280,6 +307,7 @@ func (me halfKite) Deflate() []PenrosePrimitive {
 	return r
 }
 
+// +++ halfDart
 type halfDart struct {
 	*geom.Triangle
 }
@@ -304,11 +332,11 @@ func (me halfDart) Deflate() []PenrosePrimitive {
 	return r
 }
 
+// +++ Starting Shapes
 func degToRads(d float64) float64 {
 	return d * math.Pi / 180.0
 }
 
-// Starting shape "constants"
 var HalfKite = halfKite{
 	&geom.Triangle{
 		geom.Coord{0, 0},
@@ -346,6 +374,31 @@ func Sun() []PenrosePrimitive {
 	return r
 }
 
+func DeflatePenrosePrimitives(ps []PenrosePrimitive, levels int) []PenrosePrimitive {
+	r := ps
+	fmt.Fprintf(os.Stderr, "Starting primitive count: %d\n", len(r))
+	for i := 0; i < levels; i++ {
+		rNext := make([]PenrosePrimitive, 0, 3*len(r))
+		for _, shape := range r {
+			rNext = append(rNext, shape.Deflate()...)
+		}
+		r = rNext
+		fmt.Fprintf(os.Stderr, "Primitive count after iteration %d: %d\n", i+1, len(r))
+	}
+	return r
+}
+
+func CullShapes(ps []PenrosePrimitive, bounds *geom.Rect) []PenrosePrimitive {
+	r := make([]PenrosePrimitive, 0, len(ps))
+	for _, shape := range ps {
+		if bounds.ContainsRect(shape.(geom.Bounded).Bounds()) {
+			r = append(r, shape)
+		}
+	}
+	fmt.Fprintf(os.Stderr, "Primitive count after cull: %d\n", len(r))
+	return r
+}
+
 func BoundsOfPrimitiveSlice(ps []PenrosePrimitive) geom.Rect {
 	bounds := ps[0].(geom.Bounded).Bounds()
 	for _, p := range ps[1:] {
@@ -362,22 +415,10 @@ func main() {
 	bounds.Scale(1.0/350.0, 1.0/350.0)
 
 	// Deflate the shapes
-	for i := 0; i < DEFLATE_LEVEL; i++ {
-		newShapes := make([]PenrosePrimitive, 0, 3*len(shapes))
-		for _, shape := range shapes {
-			newShapes = append(newShapes, shape.Deflate()...)
-		}
-		shapes = newShapes
-	}
+	shapes = DeflatePenrosePrimitives(shapes, DEFLATE_LEVEL)
 
 	// Remove any shapes out of bounds
-	newShapes := make([]PenrosePrimitive, 0, len(shapes))
-	for _, shape := range shapes {
-		if bounds.ContainsRect(shape.(geom.Bounded).Bounds()) {
-			newShapes = append(newShapes, shape)
-		}
-	}
-	shapes = newShapes
+	shapes = CullShapes(shapes, &bounds)
 
 	// Render to drawing primitives
 	ro := &RenderOutput{}
