@@ -1,9 +1,9 @@
 package main
 
 import (
+	"container/list"
 	"fmt"
 	"github.com/jbeda/geom"
-	"github.com/jbeda/geom/qtree"
 	"io"
 	"math"
 	"os"
@@ -107,17 +107,37 @@ func (svg *SVG) CubicBezier(p1, ctrl1, ctrl2, p2 geom.Coord, s ...string) {
 		p1.X, p1.Y, ctrl1.X, ctrl1.Y, ctrl2.X, ctrl2.Y, p2.X, p2.Y, extraparams(s))
 }
 
+func (svg *SVG) StartPath(p1 geom.Coord, s ...string) {
+	svg.printf("<path %sd='M%f,%f", extraparams(s), p1.X, p1.Y)
+}
+
+func (svg *SVG) EndPath() {
+	svg.printf("'/>\n")
+}
+
+func (svg *SVG) PathLineTo(p geom.Coord) {
+	svg.printf("\n  L%f,%f", p.X, p.Y)
+}
+
+func (svg *SVG) PathCircularArcTo(p geom.Coord, r float64, largeArc, sweep bool) {
+	svg.printf("\n  A%f,%f 0 %s,%s %f,%f", r, r, onezero(largeArc), onezero(sweep), p.X, p.Y)
+}
+
+func (svg *SVG) PathQuadBezierTo(p, ctrl1 geom.Coord) {
+	svg.printf("\n  Q%f,%f, %f,%f", ctrl1.X, ctrl1.Y, p.X, p.Y)
+}
+
+func (svg *SVG) PathCubicBezierTo(p, ctrl1, ctrl2 geom.Coord) {
+	svg.printf("\n  C%f,%f, %f,%f %f,%f", ctrl1.X, ctrl1.Y, ctrl2.X, ctrl2.Y, p.X, p.Y)
+}
+
 ////////////////////////////////////////////////////////////////////////////
-// Decomposed Penrose Geometry
-//
-// This stuff deals with pre-styled lines and arcs and is tailored to Penrose
-// tiling needs.  This could be a generic retained mode 2D model thing but it
-// is more quick and dirty for now.
+// Math/Geometry Helpers
 
 // Comparing floating point sucks.  This is probably wrong in the general case
 // but is good enough for this application.  Don't assume I know what I'm
 // doing here.  I'm pulling stuff out of my butt.
-const FLOAT_EQUAL_THRESH = 0.000000001
+const FLOAT_EQUAL_THRESH = 0.00000001
 
 func FloatAlmostEqual(a, b float64) bool {
 	return math.Abs(a-b) < FLOAT_EQUAL_THRESH
@@ -127,135 +147,199 @@ func AlmostEqualsCoord(a, b geom.Coord) bool {
 	return FloatAlmostEqual(a.X, b.X) && FloatAlmostEqual(a.Y, b.Y)
 }
 
+////////////////////////////////////////////////////////////////////////////
+// Decomposed Penrose Geometry
+//
+// This stuff deals with pre-styled lines and arcs and is tailored to Penrose
+// tiling needs.  This could be a generic retained mode 2D model thing but it
+// is more quick and dirty for now.
+
+// +++ Path
+type PathSegment interface {
+	P1() *geom.Coord
+	P2() *geom.Coord
+	Reverse()
+	PathDraw(svg *SVG)
+}
+
+type Path struct {
+	segs *list.List
+}
+
+func (me *Path) PushFront(seg PathSegment) {
+	if me.segs == nil {
+		me.segs = new(list.List)
+	}
+	me.segs.PushFront(seg)
+}
+
+func (me *Path) PushPathFront(path *Path) {
+	if me.segs == nil {
+		me.segs = new(list.List)
+	}
+	me.segs.PushFrontList(path.segs)
+}
+
+func (me *Path) PushBack(seg PathSegment) {
+	if me.segs == nil {
+		me.segs = new(list.List)
+	}
+	me.segs.PushBack(seg)
+}
+
+func (me *Path) PushPathBack(path *Path) {
+	if me.segs == nil {
+		me.segs = new(list.List)
+	}
+	me.segs.PushBackList(path.segs)
+}
+
+func (me *Path) Reverse() {
+	newSegs := new(list.List)
+	for e := me.segs.Front(); e != nil; e = e.Next() {
+		e.Value.(PathSegment).Reverse()
+		newSegs.PushFront(e.Value)
+	}
+	me.segs = newSegs
+}
+
+func (me *Path) Front() PathSegment {
+	if me.segs == nil || me.segs.Len() == 0 {
+		return nil
+	}
+	return me.segs.Front().Value.(PathSegment)
+}
+
+func (me *Path) FrontPoint() *geom.Coord {
+	s := me.Front()
+	if s != nil {
+		return s.P1()
+	}
+	return nil
+}
+
+func (me *Path) Back() PathSegment {
+	if me.segs == nil || me.segs.Len() == 0 {
+		return nil
+	}
+	return me.segs.Back().Value.(PathSegment)
+}
+
+func (me *Path) BackPoint() *geom.Coord {
+	s := me.Back()
+	if s != nil {
+		return s.P2()
+	}
+	return nil
+}
+
+func (me *Path) Draw(svg *SVG, s ...string) {
+	startP := me.segs.Front().Value.(PathSegment).P1()
+	svg.StartPath(*startP, s...)
+	for e := me.segs.Front(); e != nil; e = e.Next() {
+		e.Value.(PathSegment).PathDraw(svg)
+	}
+	svg.EndPath()
+}
+
 // +++ CutLine
 type CutLine struct {
 	A, B geom.Coord
 }
 
-func AlmostEqualsCutLines(a, b CutLine) bool {
+func AlmostEqualsCutLines(a, b *CutLine) bool {
 	return (AlmostEqualsCoord(a.A, b.A) && AlmostEqualsCoord(a.B, b.B)) ||
 		(AlmostEqualsCoord(a.A, b.B) && AlmostEqualsCoord(a.B, b.A))
 }
 
-func (cl CutLine) Equals(oi interface{}) bool {
-	ocl, ok := oi.(CutLine)
+func (cl *CutLine) Equals(oi interface{}) bool {
+	ocl, ok := oi.(*CutLine)
 	return ok && AlmostEqualsCutLines(cl, ocl)
 }
 
-func (cl CutLine) Bounds() geom.Rect {
+func (cl *CutLine) Bounds() geom.Rect {
 	r := geom.Rect{cl.A, cl.A}
 	r.ExpandToContainCoord(cl.B)
 	return r
 }
 
+func (cl *CutLine) P1() *geom.Coord { return &cl.A }
+func (cl *CutLine) P2() *geom.Coord { return &cl.B }
+func (cl *CutLine) PathDraw(svg *SVG) {
+	svg.PathLineTo(cl.B)
+}
+func (cl *CutLine) Reverse() {
+	cl.A, cl.B = cl.B, cl.A
+}
+
 // +++ MarkArc
+// This is an arc around point C and radius R, starting at the angle defined
+// by point A and ending at angle defined by point B.  The point of the arc
+// along C->A will be squished somewhat according to global tuning parameters.
 type MarkArc struct {
-	C, P1, P2 geom.Coord
-	R         float64
+	C, A, B  geom.Coord
+	R        float64
+	Offset   float64
+	Reversed bool
 }
 
-func AlmostEqualMarkArcs(a, b MarkArc) bool {
-	return AlmostEqualsCoord(a.C, b.C) && FloatAlmostEqual(a.R, b.R) &&
-		((AlmostEqualsCoord(a.P1, b.P1) && AlmostEqualsCoord(a.P2, b.P2)) ||
-			(AlmostEqualsCoord(a.P1, b.P2) && AlmostEqualsCoord(a.P2, b.P1)))
-}
-
-func (ma MarkArc) Equals(oi interface{}) bool {
-	oma, ok := oi.(MarkArc)
-	return ok && AlmostEqualMarkArcs(ma, oma)
-}
-
-// BUGBUG: This isn't the true bounds but is good enough for finding the
-// endpoints.  To realy get bounds we'd need to look for arcs that cross an
-// axis and add that point to the bounding rect.
-func (ma MarkArc) Bounds() geom.Rect {
-	p1 := ma.P1.Minus(ma.C).Unit().Times(ma.R).Plus(ma.C)
-	p2 := ma.P2.Minus(ma.C).Unit().Times(ma.R).Plus(ma.C)
-	r := geom.Rect{p1, p1}
-	r.ExpandToContainCoord(p2)
-	return r
-}
-
-// +++ RenderOutput
-type RenderOutput struct {
-	cuts  []CutLine
-	mark1 []MarkArc
-	mark2 []MarkArc
-}
-
-func (me *RenderOutput) AddCutLine(p1, p2 geom.Coord) {
-	me.cuts = append(me.cuts, CutLine{p1, p2})
-}
-
-func (me *RenderOutput) AddMark1Arc(c, v1, v2 geom.Coord, r float64) {
-	me.mark1 = append(me.mark1, MarkArc{c, v1, v2, r})
-}
-func (me *RenderOutput) AddMark2Arc(c, v1, v2 geom.Coord, r float64) {
-	me.mark2 = append(me.mark2, MarkArc{c, v1, v2, r})
-}
-
-func (me *RenderOutput) RemoveDuplicates() {
-	// First calculate the bounds of all the cut lines
-	allBounds := geom.NilRect()
-	for _, cl := range me.cuts {
-		allBounds.ExpandToContainRect(cl.Bounds())
+func (ma *MarkArc) P1() *geom.Coord {
+	r1 := ma.R*SQUISH_ARC_FACTOR + ma.Offset
+	r2 := ma.R + ma.Offset
+	if ma.Reversed {
+		r1, r2 = r2, r1
 	}
-
-	fmt.Fprintf(os.Stderr, "Number of cut lines before RemoveDuplicates: %d\n", len(me.cuts))
-
-	// Create our qtree based on that
-	qt := qtree.New(qtree.ConfigDefault(), allBounds)
-
-	// Add all cuts if they aren't already there
-	for _, cl := range me.cuts {
-		qt.FindOrInsert(cl)
-	}
-
-	// Extract out all elements
-	col := make(map[qtree.Item]bool)
-	qt.Enumerate(col)
-	newCuts := []CutLine{}
-	for item, _ := range col {
-		newCuts = append(newCuts, item.(CutLine))
-	}
-	me.cuts = newCuts
-	fmt.Fprintf(os.Stderr, "Number of cut lines after RemoveDuplicates: %d\n", len(me.cuts))
+	p1 := ma.A.Minus(ma.C).Unit().Times(r1).Plus(ma.C)
+	return &p1
 }
 
-func (me *RenderOutput) MakeSVG(s *SVG) {
-	squishFunc := SquishedArcCircle
+func (ma *MarkArc) P2() *geom.Coord {
+	r1 := ma.R*SQUISH_ARC_FACTOR + ma.Offset
+	r2 := ma.R + ma.Offset
+	if ma.Reversed {
+		r1, r2 = r2, r1
+	}
+	p2 := ma.B.Minus(ma.C).Unit().Times(r2).Plus(ma.C)
+	return &p2
+}
+
+func (ma *MarkArc) PathDraw(svg *SVG) {
 	if SQUISH_ARC_FUNC == ARC_FUNC_BEZIER {
-		squishFunc = SquishedArcBezier
-	}
-
-	for _, ma := range me.mark1 {
-		squishFunc(s, &ma, 0, MARK1_STYLE)
-	}
-	for _, ma := range me.mark2 {
-		squishFunc(s, &ma, +DOUBLE_STROKE_OFFSET, MARK2_STYLE)
-		squishFunc(s, &ma, -DOUBLE_STROKE_OFFSET, MARK2_STYLE)
-	}
-	for _, cl := range me.cuts {
-		s.Line(cl.A, cl.B, CUT_STYLE)
+		ma.PathSquishedArcBezierTo(svg)
+	} else {
+		ma.PathSquishedArcCircleTo(svg)
 	}
 }
+func (ma *MarkArc) Reverse() {
+	ma.A, ma.B = ma.B, ma.A
+	ma.Reversed = !ma.Reversed
+}
 
-func SquishedArcCircle(svg *SVG, ma *MarkArc, rOffset float64, s ...string) {
-	p1 := ma.P1.Minus(ma.C).Unit().Times(ma.R*SQUISH_ARC_FACTOR + rOffset).Plus(ma.C)
-	p2 := ma.P2.Minus(ma.C).Unit().Times(ma.R + rOffset).Plus(ma.C)
-	a := geom.VertexAngle(ma.P1, ma.C, ma.P2)
+func (ma *MarkArc) PathSquishedArcCircleTo(svg *SVG) {
+	r1 := ma.R*SQUISH_ARC_FACTOR + ma.Offset
+	r2 := ma.R + ma.Offset
+	if ma.Reversed {
+		r1, r2 = r2, r1
+	}
+	p2 := ma.B.Minus(ma.C).Unit().Times(r2).Plus(ma.C)
+	a := geom.VertexAngle(ma.A, ma.C, ma.B)
 	largeArc := a > math.Pi
 	sweep := a > 0
-	svg.CircularArc(p1, p2, ma.R+rOffset/2, largeArc, sweep, s...)
+	svg.PathCircularArcTo(p2, ma.R+ma.Offset/2, largeArc, sweep)
 }
 
-func SquishedArcBezier(svg *SVG, ma *MarkArc, rOffset float64, s ...string) {
-	r := ma.R
-	v1 := ma.P1.Minus(ma.C).Unit()
-	v2 := ma.P2.Minus(ma.C).Unit()
-	p1 := v1.Times(r*SQUISH_ARC_FACTOR + rOffset).Plus(ma.C)
-	p2 := v2.Times(r + rOffset).Plus(ma.C)
-	a := geom.VertexAngle(ma.P1, ma.C, ma.P2)
+func (ma *MarkArc) PathSquishedArcBezierTo(svg *SVG, s ...string) {
+	r1 := ma.R*SQUISH_ARC_FACTOR + ma.Offset
+	r2 := ma.R + ma.Offset
+	if ma.Reversed {
+		r1, r2 = r2, r1
+	}
+
+	v1 := ma.A.Minus(ma.C).Unit()
+	v2 := ma.B.Minus(ma.C).Unit()
+	p1 := v1.Times(r1).Plus(ma.C)
+	p2 := v2.Times(r2).Plus(ma.C)
+	a := geom.VertexAngle(ma.A, ma.C, ma.B)
 
 	var v1p, v2p geom.Coord
 	if a > 0 {
@@ -266,12 +350,220 @@ func SquishedArcBezier(svg *SVG, ma *MarkArc, rOffset float64, s ...string) {
 		v2p = geom.Coord{-v2.Y, v2.X}.Unit()
 	}
 	ctrlDist1 := SQUISH_ARC_BEZIER_ROUNDESS_A * math.Abs(a) * math.Pow(C1, DEFLATE_LEVEL)
+	ctrlDist2 := SQUISH_ARC_BEZIER_ROUNDESS_B*math.Abs(a)*math.Pow(C1, DEFLATE_LEVEL) + ma.Offset
+	if ma.Reversed {
+		ctrlDist1, ctrlDist2 = ctrlDist2, ctrlDist1
+	}
 	ctrl1 := v1p.Times(ctrlDist1).Plus(p1)
-	ctrlDist2 := SQUISH_ARC_BEZIER_ROUNDESS_B*math.Abs(a)*math.Pow(C1, DEFLATE_LEVEL) + rOffset
 	ctrl2 := v2p.Times(ctrlDist2).Plus(p2)
 	// svg.Circle(p1, 0.002, s...)
 	// svg.Circle(ctrl1, 0.001, s...)
-	svg.CubicBezier(p1, ctrl1, ctrl2, p2, s...)
+	svg.PathCubicBezierTo(p2, ctrl1, ctrl2)
+}
+
+// +++ RenderOutput
+type RenderOutput struct {
+	cuts  []*CutLine
+	mark1 []*MarkArc
+	mark2 []*MarkArc
+}
+
+func (me *RenderOutput) AddCutLine(p1, p2 geom.Coord) {
+	me.cuts = append(me.cuts, &CutLine{p1, p2})
+}
+
+func (me *RenderOutput) AddMark1Arc(c, v1, v2 geom.Coord, r float64) {
+	me.mark1 = append(me.mark1, &MarkArc{c, v1, v2, r, 0.0, false})
+}
+func (me *RenderOutput) AddMark2Arc(c, v1, v2 geom.Coord, r float64) {
+	me.mark2 = append(me.mark2, &MarkArc{c, v1, v2, r, +DOUBLE_STROKE_OFFSET, false})
+	me.mark2 = append(me.mark2, &MarkArc{c, v1, v2, r, -DOUBLE_STROKE_OFFSET, false})
+}
+
+func (me *RenderOutput) RemoveDuplicates() {
+	fmt.Fprintf(os.Stderr, "Number of cut lines before RemoveDuplicates: %d\n", len(me.cuts))
+	newCuts := []*CutLine{}
+OuterLoop:
+	for _, cl := range me.cuts {
+		for _, ncl := range newCuts {
+			if AlmostEqualsCutLines(cl, ncl) {
+				continue OuterLoop
+			}
+		}
+		// Didn't find it, add it
+		newCuts = append(newCuts, cl)
+	}
+	me.cuts = newCuts
+	fmt.Fprintf(os.Stderr, "Number of cut lines after RemoveDuplicates: %d\n", len(me.cuts))
+}
+
+func (me *RenderOutput) Optimize() *OptimizedRenderOutput {
+	or := new(OptimizedRenderOutput)
+	for _, ma := range me.mark1 {
+		or.AddMark1(ma)
+	}
+	for _, ma := range me.mark2 {
+		or.AddMark2(ma)
+	}
+	for _, c := range me.cuts {
+		or.AddCut(c)
+	}
+
+	or.Optimize()
+
+	return or
+}
+
+// +++ OptimizedRenderOutput
+// BUGBUG: I could refactor this make RenderOutput a special case of this but
+// I'm too lazy
+
+type OptimizedPathCollection struct {
+	paths []*Path
+}
+
+func (opc *OptimizedPathCollection) Draw(svg *SVG, s ...string) {
+	for _, path := range opc.paths {
+		path.Draw(svg, s...)
+	}
+}
+
+func (opc *OptimizedPathCollection) NumPaths() int {
+	return len(opc.paths)
+}
+
+func (opc *OptimizedPathCollection) AddSegment(p PathSegment) {
+	path := new(Path)
+	path.PushFront(p)
+	opc.AddPath(path)
+}
+
+func (opc *OptimizedPathCollection) AddPath(np *Path) {
+	npP1 := np.Front().P1()
+	npP2 := np.Back().P2()
+	for _, path := range opc.paths {
+		if AlmostEqualsCoord(*npP2, *path.Front().P1()) {
+			path.PushPathFront(np)
+			return
+		}
+		if AlmostEqualsCoord(*npP1, *path.Back().P2()) {
+			path.PushPathBack(np)
+			return
+		}
+		if AlmostEqualsCoord(*npP1, *path.Front().P1()) {
+			np.Reverse()
+			path.PushPathFront(np)
+			return
+		}
+		if AlmostEqualsCoord(*npP2, *path.Back().P2()) {
+			np.Reverse()
+			path.PushPathBack(np)
+			return
+		}
+	}
+
+	opc.paths = append(opc.paths, np)
+}
+
+func (opc *OptimizedPathCollection) Optimize() {
+	fmt.Fprintf(os.Stderr, "  Number of paths before optimization: %d\n", len(opc.paths))
+	// Loop through until the number of paths stabilizes
+	for i := 0; ; i++ {
+		prevNumPaths := len(opc.paths)
+
+		oldPaths := opc.paths
+		opc.paths = nil
+		for _, p := range oldPaths {
+			opc.AddPath(p)
+		}
+
+		fmt.Fprintf(os.Stderr, "  Number of paths after interation %d: %d\n", i, len(opc.paths))
+		if prevNumPaths == len(opc.paths) {
+			break
+		}
+	}
+
+	// Now sort the paths to minimize non-cutting distance.
+
+	// Compute the non-cutting distance before
+	travelDistance := float64(0)
+	lastPoint := opc.paths[0].BackPoint()
+	for _, p := range opc.paths[1:] {
+		travelDistance += lastPoint.DistanceFrom(*p.FrontPoint())
+		lastPoint = p.BackPoint()
+	}
+	fmt.Fprintf(os.Stderr, "  Non-cutting travel distance before optimization: %f\n", travelDistance)
+
+	// Create a linked list of all paths not used so we can remove them once
+	// they are used
+	oldPaths := new(list.List)
+	for _, p := range opc.paths[1:] {
+		oldPaths.PushBack(p)
+	}
+
+	// Now do a simple N^2 greedy algorithm to add paths to the new list based
+	// on the smallest distance.
+	newPaths := []*Path{opc.paths[0]}
+	travelDistance = 0
+	lastPoint = opc.paths[0].Back().P2()
+	for oldPaths.Len() != 0 {
+		bestDistance := math.MaxFloat64
+		bestDistanceElem := (*list.Element)(nil)
+		for p := oldPaths.Front(); p != nil; p = p.Next() {
+			d := lastPoint.DistanceFrom(*p.Value.(*Path).FrontPoint())
+			if d < bestDistance {
+				bestDistance = d
+				bestDistanceElem = p
+			}
+			d = lastPoint.DistanceFrom(*p.Value.(*Path).BackPoint())
+			if d < bestDistance {
+				p.Value.(*Path).Reverse()
+				bestDistance = d
+				bestDistanceElem = p
+			}
+		}
+		newPaths = append(newPaths, bestDistanceElem.Value.(*Path))
+		lastPoint = bestDistanceElem.Value.(*Path).Back().P2()
+		travelDistance += bestDistance
+		oldPaths.Remove(bestDistanceElem)
+	}
+	opc.paths = newPaths
+	fmt.Fprintf(os.Stderr, "  Non-cutting travel distance after optimization: %f\n", travelDistance)
+}
+
+type OptimizedRenderOutput struct {
+	cuts  OptimizedPathCollection
+	mark1 OptimizedPathCollection
+	mark2 OptimizedPathCollection
+}
+
+func (me *OptimizedRenderOutput) Optimize() {
+	fmt.Fprintf(os.Stderr, "Optimizing cut paths\n")
+	me.cuts.Optimize()
+
+	fmt.Fprintf(os.Stderr, "Optimizing mark1 paths\n")
+	me.mark1.Optimize()
+
+	fmt.Fprintf(os.Stderr, "Optimizing mark2 paths\n")
+	me.mark2.Optimize()
+}
+
+func (me *OptimizedRenderOutput) AddCut(p PathSegment) {
+	me.cuts.AddSegment(p)
+}
+
+func (me *OptimizedRenderOutput) AddMark1(p PathSegment) {
+	me.mark1.AddSegment(p)
+}
+
+func (me *OptimizedRenderOutput) AddMark2(p PathSegment) {
+	me.mark2.AddSegment(p)
+}
+
+func (me *OptimizedRenderOutput) MakeSVG(s *SVG) {
+	me.mark1.Draw(s, MARK1_STYLE)
+	me.mark2.Draw(s, MARK2_STYLE)
+	me.cuts.Draw(s, CUT_STYLE)
 }
 
 ////////////////////////////////////////////////////////////////////////////
@@ -383,7 +675,7 @@ func DeflatePenrosePrimitives(ps []PenrosePrimitive, levels int) []PenrosePrimit
 			rNext = append(rNext, shape.Deflate()...)
 		}
 		r = rNext
-		fmt.Fprintf(os.Stderr, "Primitive count after iteration %d: %d\n", i+1, len(r))
+		fmt.Fprintf(os.Stderr, "Primitive count after deflation %d: %d\n", i+1, len(r))
 	}
 	return r
 }
@@ -426,9 +718,10 @@ func main() {
 		shape.Render(ro)
 	}
 	ro.RemoveDuplicates()
+	oro := ro.Optimize()
 
 	s := NewSVG(os.Stdout)
 	s.Start(bounds, DEFAULT_STYLE)
-	ro.MakeSVG(s)
+	oro.MakeSVG(s)
 	s.End()
 }
